@@ -24,3 +24,12 @@ dist-ssr
 *.sw?
 *.db
 *.sqlite
+
+# Python virtual environment — never commit this
+venv/
+__pycache__/
+*.pyc
+
+# Secret keys — never commit this
+.env
+client_secret_*.json

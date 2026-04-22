@@ -15,6 +15,13 @@ import { Link } from 'react-router-dom';
 
 const API = 'http://localhost:5001';
 
+// Helper: read the JWT from localStorage and return it as an Authorization header.
+// All endpoints protected by @require_role() on Flask need this header.
+const getAuthHeaders = () => ({
+  'Content-Type': 'application/json',
+  'Authorization': `Bearer ${localStorage.getItem('token') || ''}`,
+});
+
 const CATEGORIES = ['laptops', 'tablets', 'audio', 'accessories'];
 
 // Blank form state — used when opening the Add tab
@@ -61,7 +68,7 @@ export default function AdminPage() {
     const newStock = Math.max(0, product.stock + delta);
     fetch(`${API}/api/products/${product.id}/stock`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders(),          // ← JWT required by Flask
       body: JSON.stringify({ stock: newStock }),
     })
       .then((res) => res.json())
@@ -93,7 +100,10 @@ export default function AdminPage() {
   // ── Delete ─────────────────────────────────────────────────────────────────
   const handleDelete = (product) => {
     if (!window.confirm(`Delete "${product.name}"? This cannot be undone.`)) return;
-    fetch(`${API}/api/products/${product.id}`, { method: 'DELETE' })
+    fetch(`${API}/api/products/${product.id}`, {
+      method: 'DELETE',
+      headers: getAuthHeaders(),          // ← JWT required by Flask
+    })
       .then(() => {
         setProducts((prev) => prev.filter((p) => p.id !== product.id));
       });
@@ -122,7 +132,7 @@ export default function AdminPage() {
 
     fetch(url, {
       method,
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders(),          // ← JWT required by Flask
       body: JSON.stringify(payload),
     })
       .then((res) => res.json())

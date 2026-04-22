@@ -41,10 +41,30 @@ def init_db():
         )
     """)
 
+    # Create the users table for Google OAuth sign-in.
+    # role must be one of: "admin", "cashier", "customer"
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id    INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT    NOT NULL UNIQUE,
+            name  TEXT    NOT NULL,
+            role  TEXT    NOT NULL DEFAULT 'customer'
+        )
+    """)
+
+    # Seed one default admin user.
+    # INSERT OR IGNORE means this is safe to re-run — it won't duplicate the row.
+    cur.execute("""
+        INSERT OR IGNORE INTO users (email, name, role)
+        VALUES ('rfeng550@gmail.com', 'Admin', 'admin')
+    """)
+
     con.commit()
     con.close()
     print(f"✅  Schema ready: {DB_PATH}")
-    print("    Run 'python seed_products.py' to populate the table.")
+    print("    Tables: products, users")
+    print("    Default admin: rfeng550@gmail.com")
+    print("    Run 'python seed_products.py' to populate the products table.")
 
 
 if __name__ == "__main__":
