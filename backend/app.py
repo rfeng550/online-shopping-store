@@ -16,6 +16,7 @@
 #   POST   http://localhost:5001/api/products              → create a new product
 #   PUT    http://localhost:5001/api/products/1            → update all fields
 #   PATCH  http://localhost:5001/api/products/1/stock      → update stock count only
+#   PUT    http://localhost:5001/api/products/1/stock      → restock: update stock, return full product
 #   DELETE http://localhost:5001/api/products/1            → delete a product
 #
 # =============================================================================
@@ -253,7 +254,85 @@ def update_stock(product_id):
 
 
 # -----------------------------------------------------------------------------
-# Route 7 — Delete a product  (Admin)
+# Route 7 — Restock a product (Admin)  PUT /api/products/<id>/stock
+# -----------------------------------------------------------------------------
+@app.route("/api/products/<int:product_id>/stock", methods=["PUT"])
+def restock_product(product_id):
+    """Update the stock field and return the full updated product row.
+
+    Why PUT instead of PATCH?
+      PATCH = partial update (we already use it above for quick +/- adjustments).
+      PUT   = full replacement of a resource — here we're setting an exact new
+              stock value and returning the complete product back to the caller.
+
+    Expected request body:
+      { "stock": 25 }
+
+    Possible responses:
+      200 + full product JSON   — success
+      400 + error message       — stock is missing, not an integer, or negative
+      404 + error message       — no product with that id exists
+
+    Example (curl):
+      curl -X PUT http://localhost:5001/api/products/3/stock \
+           -H "Content-Type: application/json" \
+           -d '{"stock": 25}'
+
+    React usage:
+      const res = await fetch(`http://localhost:5001/api/products/${id}/stock`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stock: newStock }),
+      });
+      const updatedProduct = await res.json();
+    """
+    # ── Step 1: Read the JSON body sent by the client ──────────────────────────
+    data = request.get_json()   # returns None if the body is not valid JSON
+
+    # Pull out the "stock" field (will be None if the key is missing)
+    new_stock = data.get("stock") if data else None
+
+    # ── Step 2: Validate the input ─────────────────────────────────────────────
+    # We need stock to be:
+    #   - present in the body
+    #   - an integer (not a float, string, etc.)
+    #   - 0 or higher (can't have negative stock)
+    if new_stock is None or not isinstance(new_stock, int) or new_stock < 0:
+        return jsonify({"error": "stock must be a non-negative integer"}), 400
+
+    # ── Step 3: Check the product exists ───────────────────────────────────────
+    con = get_connection()
+
+    row = con.execute(
+        "SELECT * FROM products WHERE id = ?",
+        (product_id,)
+    ).fetchone()
+
+    if row is None:
+        con.close()
+        return jsonify({"error": f"Product with id {product_id} not found"}), 404
+
+    # ── Step 4: Update the stock column ────────────────────────────────────────
+    con.execute(
+        "UPDATE products SET stock = ? WHERE id = ?",
+        (new_stock, product_id)   # ? placeholders keep SQL injection out
+    )
+    con.commit()   # write the change to disk
+
+    # ── Step 5: Fetch the updated row and return it ────────────────────────────
+    # We re-fetch so the response reflects exactly what is now in the database.
+    updated_row = con.execute(
+        "SELECT * FROM products WHERE id = ?",
+        (product_id,)
+    ).fetchone()
+
+    con.close()
+
+    return jsonify(dict(updated_row)), 200   # full product object back to caller
+
+
+# -----------------------------------------------------------------------------
+# Route 8 — Delete a product  (Admin)
 # -----------------------------------------------------------------------------
 @app.route("/api/products/<int:product_id>", methods=["DELETE"])
 def delete_product(product_id):
