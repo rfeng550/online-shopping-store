@@ -1,0 +1,10 @@
+# Flask backend dependencies
+# Install all at once with:
+#   python3 -m pip install -r requirements.txt
+
+flask>=3.1.0
+flask-cors>=6.0.0
+flask-jwt-extended>=4.7.0
+google-auth>=2.49.0
+google-auth-oauthlib>=1.3.0
+python-dotenv>=1.2.0

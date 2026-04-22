@@ -18,13 +18,22 @@
 #   PATCH  http://localhost:5001/api/products/1/stock      → update stock count only
 #   PUT    http://localhost:5001/api/products/1/stock      → restock: update stock, return full product
 #   DELETE http://localhost:5001/api/products/1            → delete a product
+#   POST   http://localhost:5001/api/auth/google-login     → verify Google token, return JWT
 #
 # =============================================================================
 
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
 import sqlite3
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+from flask_jwt_extended import JWTManager, create_access_token, decode_token
+from jwt.exceptions import ExpiredSignatureError, DecodeError
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
 
 # -----------------------------------------------------------------------------
 # Create the Flask app and enable CORS
@@ -34,6 +43,13 @@ app = Flask(__name__)
 # CORS lets your React app (running at localhost:5173) call this API.
 # Without this, the browser would block the request with a CORS error.
 CORS(app, origins=["http://localhost:5173"])
+
+# JWT configuration — secret key is loaded from .env
+app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY", "fallback-secret-change-me")
+jwt = JWTManager(app)
+
+# Google OAuth client ID — loaded from .env
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 
 # Build the full path to the database file, e.g.:
 #   /Users/yourname/Desktop/Data/backend/products.db
@@ -52,6 +68,58 @@ def get_connection():
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row   # rows act like dicts
     return con
+
+
+# -----------------------------------------------------------------------------
+# Helper decorator: require_role(role)
+# -----------------------------------------------------------------------------
+import functools
+
+def require_role(required_role):
+    """Decorator factory that protects a route with JWT + role check.
+
+    Usage:
+        @app.route("/api/some-admin-route", methods=["PUT"])
+        @require_role("admin")
+        def my_view():
+            ...
+
+    What it does:
+      1. Reads the Authorization header — expects "Bearer <jwt-token>"
+      2. Decodes the JWT using the app's secret key
+      3. Reads the "role" claim embedded in the token
+      4. If the role matches required_role → calls the original view function
+      5. If the token is missing           → 401 Unauthorized
+      6. If the token is invalid/expired   → 401 Unauthorized
+      7. If the role does not match        → 403 Forbidden
+    """
+    def decorator(fn):
+        @functools.wraps(fn)   # preserve the original function's name for Flask routing
+        def wrapper(*args, **kwargs):
+            # ── Step 1: extract token from the Authorization header ──────────
+            auth_header = request.headers.get("Authorization", "")
+            if not auth_header.startswith("Bearer "):
+                return jsonify({"error": "Missing or malformed Authorization header"}), 401
+
+            token = auth_header.split(" ", 1)[1]  # everything after "Bearer "
+
+            # ── Step 2: decode and validate the JWT ──────────────────────────
+            try:
+                # decode_token is a flask-jwt-extended helper that uses the
+                # app's JWT_SECRET_KEY and rejects expired tokens automatically.
+                decoded = decode_token(token)
+            except Exception:
+                return jsonify({"error": "Invalid or expired token"}), 401
+
+            # ── Step 3: check the role claim ─────────────────────────────────
+            user_role = decoded.get("role") or decoded.get("additional_claims", {}).get("role")
+            if user_role != required_role:
+                return jsonify({"error": f"Forbidden: requires role '{required_role}'"}), 403
+
+            # ── Step 4: all good — call the real view function ───────────────
+            return fn(*args, **kwargs)
+        return wrapper
+    return decorator
 
 
 # -----------------------------------------------------------------------------
@@ -257,6 +325,7 @@ def update_stock(product_id):
 # Route 7 — Restock a product (Admin)  PUT /api/products/<id>/stock
 # -----------------------------------------------------------------------------
 @app.route("/api/products/<int:product_id>/stock", methods=["PUT"])
+@require_role("admin")   # ← JWT required; role must be "admin"
 def restock_product(product_id):
     """Update the stock field and return the full updated product row.
 
@@ -351,6 +420,88 @@ def delete_product(product_id):
     con.close()
 
     return jsonify({"message": "deleted", "id": product_id}), 200
+
+
+# -----------------------------------------------------------------------------
+# Route 9 — Google Sign-In  (Auth)
+# -----------------------------------------------------------------------------
+@app.route("/api/auth/google-login", methods=["POST"])
+def google_login():
+    """Verify a Google credential token and return a signed JWT.
+
+    Flow:
+      1. Receive the Google ID token from the React frontend
+      2. Verify it with Google's servers using the google-auth library
+      3. Extract email + name from the verified token payload
+      4. Look up the user in our 'users' table by email
+         - If not found, auto-register them as "customer"
+      5. Issue a JWT containing user id, email, and role
+      6. Return the JWT to the frontend
+
+    Expected request body:
+      { "credential": "<google-id-token-string>" }
+
+    Possible responses:
+      200 + { "token": "..." }   — success
+      400 + error message        — missing credential field
+      401 + error message        — invalid/expired Google token
+    """
+    data = request.get_json()
+    credential = data.get("credential") if data else None
+
+    if not credential:
+        return jsonify({"error": "Missing credential"}), 400
+
+    try:
+        # Verify the token against Google's public certificates.
+        # This call also checks the token expiry and audience (client_id).
+        id_info = id_token.verify_oauth2_token(
+            credential,
+            google_requests.Request(),
+            GOOGLE_CLIENT_ID
+        )
+    except ValueError as e:
+        # Token is invalid or expired
+        return jsonify({"error": f"Invalid token: {str(e)}"}), 401
+
+    # Extract user details from the verified token payload
+    email = id_info.get("email")
+    name  = id_info.get("name", email)   # fall back to email if no name
+
+    # Look up or create user in the database
+    con = get_connection()
+
+    row = con.execute(
+        "SELECT * FROM users WHERE email = ?", (email,)
+    ).fetchone()
+
+    if row is None:
+        # New user — register with default "customer" role
+        cur = con.execute(
+            "INSERT INTO users (email, name, role) VALUES (?, ?, ?)",
+            (email, name, "customer")
+        )
+        con.commit()
+        user_id   = cur.lastrowid
+        user_role = "customer"
+    else:
+        user_id   = row["id"]
+        user_role = row["role"]
+        name      = row["name"]   # use the stored name (e.g. "Admin")
+
+    con.close()
+
+    # Create a JWT that includes user info as additional claims
+    token = create_access_token(
+        identity=str(user_id),
+        additional_claims={
+            "email": email,
+            "name":  name,
+            "role":  user_role,
+        }
+    )
+
+    return jsonify({"token": token}), 200
 
 
 if __name__ == "__main__":
