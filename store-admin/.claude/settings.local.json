@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir -p \"/Users/rfeng/Desktop/Data/section 7\")",
+      "Bash(rsync -a --exclude='section6-connected' --exclude='section 7' --exclude='node_modules' /Users/rfeng/Desktop/Data/ \"/Users/rfeng/Desktop/Data/section 7/\")"
+    ]
+  }
+}
