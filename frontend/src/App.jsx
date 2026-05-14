@@ -6,6 +6,8 @@ import ProductDetailPage from './pages/ProductDetailPage.jsx';
 import CartPage from './pages/CartPage.jsx';
 import CheckoutPage from './pages/CheckoutPage.jsx';
 import AdminPage from './pages/AdminPage.jsx';
+import POSPage from './pages/POSPage.jsx';
+import OrderHistoryPage from './pages/OrderHistoryPage.jsx';
 import LoginPage from './pages/LoginPage.jsx';
 import ProtectedRoute from './components/ProtectedRoute.jsx';
 import { CartProvider } from './context/CartContext.jsx';
@@ -66,10 +68,16 @@ export default function App() {
           <Route path="/cart"          element={<CartPage />} />
           <Route path="/checkout"      element={<CheckoutPage />} />
           <Route path="/admin"         element={
-            <ProtectedRoute requiredRole="admin">
+            <ProtectedRoute requiredRoles={["admin"]}>
               <AdminPage />
             </ProtectedRoute>
           } />
+          <Route path="/pos"           element={
+            <ProtectedRoute requiredRoles={["admin", "cashier"]}>
+              <POSPage />
+            </ProtectedRoute>
+          } />
+          <Route path="/orders"        element={<OrderHistoryPage />} />
         </Routes>
       </CartProvider>
     </BrowserRouter>

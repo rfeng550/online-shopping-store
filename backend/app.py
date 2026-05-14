@@ -78,12 +78,12 @@ def get_connection():
 # -----------------------------------------------------------------------------
 import functools
 
-def require_role(required_role):
+def require_roles(required_roles):
     """Decorator factory that protects a route with JWT + role check.
 
     Usage:
         @app.route("/api/some-admin-route", methods=["PUT"])
-        @require_role("admin")
+        @require_roles(["admin", "cashier"])
         def my_view():
             ...
 
@@ -91,7 +91,7 @@ def require_role(required_role):
       1. Reads the Authorization header — expects "Bearer <jwt-token>"
       2. Decodes the JWT using the app's secret key
       3. Reads the "role" claim embedded in the token
-      4. If the role matches required_role → calls the original view function
+      4. If the role is in required_roles → calls the original view function
       5. If the token is missing           → 401 Unauthorized
       6. If the token is invalid/expired   → 401 Unauthorized
       7. If the role does not match        → 403 Forbidden
@@ -116,8 +116,8 @@ def require_role(required_role):
 
             # ── Step 3: check the role claim ─────────────────────────────────
             user_role = decoded.get("role") or decoded.get("additional_claims", {}).get("role")
-            if user_role != required_role:
-                return jsonify({"error": f"Forbidden: requires role '{required_role}'"}), 403
+            if user_role not in required_roles:
+                return jsonify({"error": f"Forbidden: requires one of {required_roles}"}), 403
 
             # ── Step 4: all good — call the real view function ───────────────
             return fn(*args, **kwargs)
@@ -328,7 +328,7 @@ def update_stock(product_id):
 # Route 7 — Restock a product (Admin)  PUT /api/products/<id>/stock
 # -----------------------------------------------------------------------------
 @app.route("/api/products/<int:product_id>/stock", methods=["PUT"])
-@require_role("admin")   # ← JWT required; role must be "admin"
+@require_roles(["admin"])   # ← JWT required; role must be "admin"
 def restock_product(product_id):
     """Update the stock field and return the full updated product row.
 
@@ -506,6 +506,236 @@ def google_login():
 
     return jsonify({"token": token}), 200
 
+
+# -----------------------------------------------------------------------------
+# Route 9 — POS Checkout (Admin / Cashier)
+# -----------------------------------------------------------------------------
+@app.route("/api/pos/checkout", methods=["POST"])
+@require_roles(["admin", "cashier"])
+def pos_checkout():
+    """Process a POS sale.
+
+    Expects: { "items": [ {"id": 1, "quantity": 2}, ... ] }
+    Deducts stock and creates an order record.
+    """
+    data = request.get_json()
+    if not data or "items" not in data or not isinstance(data["items"], list):
+        return jsonify({"error": "Invalid payload. Expected { 'items': [...] }"}), 400
+
+    items = data["items"]
+    if not items:
+        return jsonify({"error": "Cart is empty"}), 400
+
+    con = get_connection()
+    try:
+        con.execute("BEGIN TRANSACTION")
+        
+        total_price = 0.0
+        processed_items = []
+
+        for item in items:
+            product_id = item.get("id")
+            quantity = item.get("quantity")
+            
+            if not isinstance(product_id, int) or not isinstance(quantity, int) or quantity <= 0:
+                raise ValueError("Invalid item format")
+
+            row = con.execute("SELECT name, price, stock FROM products WHERE id = ?", (product_id,)).fetchone()
+            if not row:
+                raise ValueError(f"Product ID {product_id} not found")
+            
+            stock = row["stock"]
+            price = row["price"]
+            name = row["name"]
+            
+            if stock < quantity:
+                raise ValueError(f"Not enough stock for {name}. Available: {stock}, Requested: {quantity}")
+
+            con.execute("UPDATE products SET stock = stock - ? WHERE id = ?", (quantity, product_id))
+            
+            total_price += price * quantity
+            processed_items.append({
+                "product_id": product_id,
+                "quantity": quantity,
+                "price": price
+            })
+
+        cur = con.cursor()
+        cur.execute("INSERT INTO orders (total) VALUES (?)", (total_price,))
+        order_id = cur.lastrowid
+
+        for p_item in processed_items:
+            cur.execute(
+                "INSERT INTO order_items (order_id, product_id, quantity, price_at_purchase) VALUES (?, ?, ?, ?)",
+                (order_id, p_item["product_id"], p_item["quantity"], p_item["price"])
+            )
+
+        con.commit()
+        return jsonify({"message": "Sale completed successfully", "order_id": order_id}), 200
+
+    except ValueError as e:
+        con.rollback()
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        con.rollback()
+        return jsonify({"error": "Internal server error"}), 500
+    finally:
+        con.close()
+
+
+# -----------------------------------------------------------------------------
+# Route 10 — Online Checkout (Public / Customer)
+# -----------------------------------------------------------------------------
+@app.route("/api/checkout", methods=["POST"])
+def online_checkout():
+    """Process an online store checkout.
+
+    Expects: { "items": [ {"id": 1, "quantity": 2}, ... ] }
+    If Authorization header is provided, links the order to the user.
+    """
+    data = request.get_json()
+    if not data or "items" not in data or not isinstance(data["items"], list):
+        return jsonify({"error": "Invalid payload. Expected { 'items': [...] }"}), 400
+
+    items = data["items"]
+    phone = data.get("phone")
+    if not items:
+        return jsonify({"error": "Cart is empty"}), 400
+
+    # Check for optional auth token to link user
+    user_id = None
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header.split(" ", 1)[1]
+        try:
+            decoded = decode_token(token)
+            user_id = decoded.get("sub")
+        except Exception:
+            pass # Ignore invalid token for guest checkout
+
+    con = get_connection()
+    try:
+        con.execute("BEGIN TRANSACTION")
+        
+        total_price = 0.0
+        processed_items = []
+
+        for item in items:
+            product_id = item.get("id")
+            quantity = item.get("quantity")
+            
+            if not isinstance(product_id, int) or not isinstance(quantity, int) or quantity <= 0:
+                raise ValueError("Invalid item format")
+
+            row = con.execute("SELECT name, price, stock FROM products WHERE id = ?", (product_id,)).fetchone()
+            if not row:
+                raise ValueError(f"Product ID {product_id} not found")
+            
+            stock = row["stock"]
+            price = row["price"]
+            name = row["name"]
+            
+            if stock < quantity:
+                raise ValueError(f"Not enough stock for {name}. Available: {stock}, Requested: {quantity}")
+
+            con.execute("UPDATE products SET stock = stock - ? WHERE id = ?", (quantity, product_id))
+            
+            total_price += price * quantity
+            processed_items.append({
+                "product_id": product_id,
+                "quantity": quantity,
+                "price": price
+            })
+
+        cur = con.cursor()
+        if user_id:
+            cur.execute("INSERT INTO orders (user_id, total, phone) VALUES (?, ?, ?)", (user_id, total_price, phone))
+        else:
+            cur.execute("INSERT INTO orders (total, phone) VALUES (?, ?)", (total_price, phone))
+        order_id = cur.lastrowid
+
+        for p_item in processed_items:
+            cur.execute(
+                "INSERT INTO order_items (order_id, product_id, quantity, price_at_purchase) VALUES (?, ?, ?, ?)",
+                (order_id, p_item["product_id"], p_item["quantity"], p_item["price"])
+            )
+
+        con.commit()
+        return jsonify({"message": "Order placed successfully", "order_id": order_id}), 200
+
+    except ValueError as e:
+        con.rollback()
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        con.rollback()
+        return jsonify({"error": "Internal server error"}), 500
+    finally:
+        con.close()
+
+# -----------------------------------------------------------------------------
+# Route 11 — Order History (Customer / Admin)
+# -----------------------------------------------------------------------------
+@app.route("/api/orders", methods=["GET"])
+def get_orders():
+    """Fetch order history.
+    Admins see all orders. Customers see their own.
+    Guests see orders matching guest_ids (only where user_id IS NULL).
+    """
+    auth_header = request.headers.get("Authorization", "")
+    user_role = None
+    user_id = None
+    
+    if auth_header.startswith("Bearer "):
+        try:
+            token = auth_header.split(" ", 1)[1]
+            decoded = decode_token(token)
+            user_id = decoded.get("sub")
+            user_role = decoded.get("role") or decoded.get("additional_claims", {}).get("role")
+        except Exception:
+            pass # Treat as guest if token is invalid
+
+    con = get_connection()
+    if user_role == "admin":
+        orders = con.execute("SELECT * FROM orders ORDER BY created_at DESC").fetchall()
+    elif user_role in ["customer", "cashier"] and user_id:
+        orders = con.execute("SELECT * FROM orders WHERE user_id = ? ORDER BY created_at DESC", (user_id,)).fetchall()
+    else:
+        # Guest mode
+        guest_ids_param = request.args.get("guest_ids")
+        if not guest_ids_param:
+            con.close()
+            return jsonify([]), 200
+            
+        # Parse guest_ids (e.g., "1,2,3")
+        try:
+            guest_ids = [int(gid) for gid in guest_ids_param.split(",") if gid.strip()]
+        except ValueError:
+            con.close()
+            return jsonify({"error": "Invalid guest_ids parameter"}), 400
+            
+        if not guest_ids:
+            con.close()
+            return jsonify([]), 200
+
+        # Create placeholders for IN clause
+        placeholders = ",".join("?" * len(guest_ids))
+        query = f"SELECT * FROM orders WHERE id IN ({placeholders}) AND user_id IS NULL ORDER BY created_at DESC"
+        orders = con.execute(query, guest_ids).fetchall()
+
+    order_list = []
+    for o in orders:
+        o_dict = dict(o)
+        items = con.execute("""
+            SELECT oi.*, p.name 
+            FROM order_items oi 
+            LEFT JOIN products p ON oi.product_id = p.id
+            WHERE oi.order_id = ?
+        """, (o["id"],)).fetchall()
+        o_dict["items"] = [dict(i) for i in items]
+        order_list.append(o_dict)
+        
+    con.close()
+    return jsonify(order_list), 200
 
 if __name__ == "__main__":
     # Check that the database file exists before starting
