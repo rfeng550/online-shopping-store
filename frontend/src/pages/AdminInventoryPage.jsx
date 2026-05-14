@@ -2,14 +2,14 @@
 // src/pages/AdminInventoryPage.jsx — Admin Inventory Table
 // =============================================================================
 //
-// Fetches products from GET http://localhost:5001/api/products on mount.
+// Fetches products from GET ${import.meta.env.VITE_API_URL}/api/products on mount.
 // Shows a loading message while fetching, an error message if it fails,
 // then displays the table with search / category / low-stock filters.
 // =============================================================================
 
 import { useState, useEffect } from 'react';
 
-const API = 'http://localhost:5001';
+const API = import.meta.env.VITE_API_URL;
 
 export default function AdminInventoryPage() {
   // ── Fetch state ─────────────────────────────────────────────────────────────

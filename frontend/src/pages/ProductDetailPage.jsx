@@ -17,7 +17,7 @@ export default function ProductDetailPage() {
 
   // Fetch the single product by id from the Flask API
   useEffect(() => {
-    fetch(`http://localhost:5001/api/products/${id}`)
+    fetch(`${import.meta.env.VITE_API_URL}/api/products/${id}`)
       .then((res) => {
         // 404 means the product id doesn't exist in the database
         if (res.status === 404) {

@@ -3,7 +3,7 @@ import { GoogleLogin } from '@react-oauth/google';
 import { useNavigate } from 'react-router-dom';
 
 // Flask backend URL — matches the port in app.py
-const API_URL = 'http://localhost:5001';
+const API_URL = import.meta.env.VITE_API_URL;
 
 export default function LoginPage() {
   const navigate = useNavigate();
