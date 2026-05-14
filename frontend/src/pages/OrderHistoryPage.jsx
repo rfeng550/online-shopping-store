@@ -60,6 +60,33 @@ export default function OrderHistoryPage() {
     fetchOrders();
   }, [API_URL]);
 
+  const isAdmin = localStorage.getItem('role') === 'admin';
+
+  const handleExportCSV = async () => {
+    const token = localStorage.getItem('token');
+    if (!token) return;
+
+    try {
+      const res = await fetch(`${API_URL}/api/orders/export`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.error || 'Failed to export');
+      }
+      
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'orders_export.csv';
+      a.click();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      alert(err.message);
+    }
+  };
+
   if (loading) {
     return <div style={styles.page}><p>Loading order history...</p></div>;
   }
@@ -71,7 +98,14 @@ export default function OrderHistoryPage() {
   return (
     <div style={styles.page}>
       <div style={styles.container}>
-        <h1 style={styles.title}>Order History</h1>
+        <div style={styles.header}>
+          <h1 style={styles.title}>Order History</h1>
+          {isAdmin && (
+            <button style={styles.exportBtn} onClick={handleExportCSV}>
+              ⬇️ Export to CSV
+            </button>
+          )}
+        </div>
         
         {orders.length === 0 ? (
           <p style={styles.emptyMsg}>You have no order history yet.</p>
@@ -133,11 +167,28 @@ const styles = {
     maxWidth: '800px',
     margin: '0 auto',
   },
+  header: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: '24px',
+  },
   title: {
     fontSize: '32px',
     fontWeight: '800',
     color: '#0f172a',
-    marginBottom: '24px',
+  },
+  exportBtn: {
+    padding: '10px 16px',
+    backgroundColor: '#0f172a',
+    color: 'white',
+    border: 'none',
+    borderRadius: '8px',
+    fontWeight: '600',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
   },
   emptyMsg: {
     color: '#64748b',
