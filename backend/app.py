@@ -23,12 +23,14 @@
 # =============================================================================
 
 import os
+import csv
+import io
 from dotenv import load_dotenv
 
 load_dotenv()
 
 import sqlite3
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, Response
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager, create_access_token, decode_token
 from jwt.exceptions import ExpiredSignatureError, DecodeError
@@ -156,9 +158,14 @@ def get_products():
       const products = await res.json()   // → array of product objects
     """
     con = get_connection()
+    q = request.args.get("q", "").strip()
 
-    # fetchall() returns all matching rows
-    rows = con.execute("SELECT * FROM products").fetchall()
+    if q:
+        search_pattern = f"%{q}%"
+        query = "SELECT * FROM products WHERE name LIKE ? OR description LIKE ?"
+        rows = con.execute(query, (search_pattern, search_pattern)).fetchall()
+    else:
+        rows = con.execute("SELECT * FROM products").fetchall()
 
     con.close()  # always close the connection when finished
 
@@ -228,18 +235,19 @@ def create_product():
     con = get_connection()
     cur = con.execute(
         """
-        INSERT INTO products (name, price, image, category, stock, description, featured, on_sale)
-        VALUES (:name, :price, :image, :category, :stock, :description, :featured, :on_sale)
+        INSERT INTO products (name, price, image, category, stock, description, featured, on_sale, original_price)
+        VALUES (:name, :price, :image, :category, :stock, :description, :featured, :on_sale, :original_price)
         """,
         {
-            "name":        data.get("name"),
-            "price":       float(data.get("price", 0)),
-            "image":       data.get("image", ""),
-            "category":    data.get("category", ""),
-            "stock":       int(data.get("stock", 0)),
-            "description": data.get("description", ""),
-            "featured":    int(bool(data.get("featured", 0))),
-            "on_sale":     int(bool(data.get("on_sale", 0))),
+            "name":           data.get("name"),
+            "price":          float(data.get("price", 0)),
+            "image":          data.get("image", ""),
+            "category":       data.get("category", ""),
+            "stock":          int(data.get("stock", 0)),
+            "description":    data.get("description", ""),
+            "featured":       int(bool(data.get("featured", 0))),
+            "on_sale":        int(bool(data.get("on_sale", 0))),
+            "original_price": data.get("original_price"),
         },
     )
     con.commit()
@@ -273,19 +281,20 @@ def update_product(product_id):
         UPDATE products
         SET name=:name, price=:price, image=:image, category=:category,
             stock=:stock, description=:description,
-            featured=:featured, on_sale=:on_sale
+            featured=:featured, on_sale=:on_sale, original_price=:original_price
         WHERE id=:id
         """,
         {
-            "name":        data.get("name"),
-            "price":       float(data.get("price", 0)),
-            "image":       data.get("image", ""),
-            "category":    data.get("category", ""),
-            "stock":       int(data.get("stock", 0)),
-            "description": data.get("description", ""),
-            "featured":    int(bool(data.get("featured", 0))),
-            "on_sale":     int(bool(data.get("on_sale", 0))),
-            "id":          product_id,
+            "name":           data.get("name"),
+            "price":          float(data.get("price", 0)),
+            "image":          data.get("image", ""),
+            "category":       data.get("category", ""),
+            "stock":          int(data.get("stock", 0)),
+            "description":    data.get("description", ""),
+            "featured":       int(bool(data.get("featured", 0))),
+            "on_sale":        int(bool(data.get("on_sale", 0))),
+            "original_price": data.get("original_price"),
+            "id":             product_id,
         },
     )
     con.commit()
@@ -560,6 +569,18 @@ def pos_checkout():
                 "price": price
             })
 
+        # Apply discount if provided
+        discount_percent = data.get("discount_percent", 0)
+        try:
+            discount_percent = float(discount_percent)
+            if not (0 <= discount_percent <= 100):
+                raise ValueError
+        except ValueError:
+            raise ValueError("discount_percent must be a number between 0 and 100")
+            
+        if discount_percent > 0:
+            total_price = total_price * (1 - discount_percent / 100.0)
+
         cur = con.cursor()
         cur.execute("INSERT INTO orders (total) VALUES (?)", (total_price,))
         order_id = cur.lastrowid
@@ -736,6 +757,72 @@ def get_orders():
         
     con.close()
     return jsonify(order_list), 200
+
+# -----------------------------------------------------------------------------
+# Route 12 — Export Orders to CSV (Admin Only)
+# -----------------------------------------------------------------------------
+@app.route("/api/orders/export", methods=["GET"])
+@require_roles(["admin"])
+def export_orders_csv():
+    """Export all orders and their line items as a downloadable CSV file.
+    Only accessible to admins. Teaches io.StringIO, csv.writer, and Flask Response streaming.
+    """
+    con = get_connection()
+    # Fetch all orders joined with order_items and products
+    query = """
+        SELECT 
+            o.id as order_id, 
+            o.created_at, 
+            o.user_id, 
+            o.phone, 
+            o.status, 
+            o.total as order_total,
+            oi.quantity, 
+            oi.price_at_purchase as item_price,
+            p.name as product_name
+        FROM orders o
+        LEFT JOIN order_items oi ON o.id = oi.order_id
+        LEFT JOIN products p ON oi.product_id = p.id
+        ORDER BY o.created_at DESC
+    """
+    rows = con.execute(query).fetchall()
+    con.close()
+
+    # Create an in-memory string buffer
+    si = io.StringIO()
+    cw = csv.writer(si)
+    
+    # Write the CSV header
+    cw.writerow([
+        "Order ID", "Date", "User ID", "Phone", "Status", "Order Total", 
+        "Product Name", "Quantity", "Item Price", "Item Subtotal"
+    ])
+    
+    # Write data rows
+    for r in rows:
+        item_subtotal = (r["quantity"] * r["item_price"]) if r["quantity"] and r["item_price"] else 0
+        cw.writerow([
+            r["order_id"],
+            r["created_at"],
+            r["user_id"] or "Guest",
+            r["phone"] or "N/A",
+            r["status"],
+            f"${r['order_total']:.2f}",
+            r["product_name"] or "Unknown Item",
+            r["quantity"] or 0,
+            f"${r['item_price']:.2f}" if r["item_price"] else "$0.00",
+            f"${item_subtotal:.2f}"
+        ])
+
+    # Get the CSV string and create a response
+    output = si.getvalue()
+    si.close()
+
+    return Response(
+        output,
+        mimetype="text/csv",
+        headers={"Content-Disposition": "attachment; filename=orders_export.csv"}
+    )
 
 if __name__ == "__main__":
     # Check that the database file exists before starting

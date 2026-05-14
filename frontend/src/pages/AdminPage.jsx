@@ -24,9 +24,8 @@ const getAuthHeaders = () => ({
 
 const CATEGORIES = ['laptops', 'tablets', 'audio', 'accessories'];
 
-// Blank form state — used when opening the Add tab
 const EMPTY_FORM = {
-  name: '', price: '', image: '', category: 'accessories',
+  name: '', price: '', discount_percent: '', image: '', category: 'accessories',
   stock: '', description: '', featured: false, on_sale: false,
 };
 
@@ -38,6 +37,9 @@ export default function AdminPage() {
   const [products, setProducts] = useState([]);
   const [loading, setLoading]   = useState(true);
   const [error, setError]       = useState(null);
+
+  const [searchTerm, setSearchTerm] = useState('');
+  const [activeCategory, setActiveCategory] = useState('all');
 
   // ── Form (shared by Add and Edit) ──────────────────────────────────────────
   const [form, setForm]         = useState(EMPTY_FORM);
@@ -83,15 +85,22 @@ export default function AdminPage() {
   // ── Open Edit tab pre-filled ───────────────────────────────────────────────
   const handleEditClick = (product) => {
     setEditId(product.id);
+    const isOnSale = Boolean(product.on_sale);
+    const basePrice = isOnSale && product.original_price ? product.original_price : product.price;
+    const discount = isOnSale && product.original_price 
+      ? Math.round((1 - product.price / product.original_price) * 100) 
+      : '';
+
     setForm({
       name:        product.name,
-      price:       product.price,
+      price:       basePrice,
+      discount_percent: discount,
       image:       product.image || '',
       category:    product.category || 'accessories',
       stock:       product.stock,
       description: product.description || '',
       featured:    Boolean(product.featured),
-      on_sale:     Boolean(product.on_sale),
+      on_sale:     isOnSale,
     });
     setSaveMsg(null);
     setTab('edit');
@@ -115,9 +124,19 @@ export default function AdminPage() {
     setSaving(true);
     setSaveMsg(null);
 
+    let basePrice = parseFloat(form.price);
+    let finalPrice = basePrice;
+    let originalPrice = null;
+
+    if (form.on_sale && form.discount_percent) {
+      originalPrice = basePrice;
+      finalPrice = basePrice * (1 - parseFloat(form.discount_percent) / 100);
+    }
+
     const payload = {
       name:        form.name.trim(),
-      price:       parseFloat(form.price),
+      price:       finalPrice,
+      original_price: originalPrice,
       image:       form.image.trim(),
       category:    form.category,
       stock:       parseInt(form.stock, 10) || 0,
@@ -152,6 +171,13 @@ export default function AdminPage() {
       });
   };
 
+  // ── Filter logic ───────────────────────────────────────────────────────────
+  const filteredProducts = products.filter(p => {
+    const matchSearch = p.name.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchCategory = activeCategory === 'all' || p.category === activeCategory;
+    return matchSearch && matchCategory;
+  });
+
   // ════════════════════════════════════════════════════════════════════════════
   // Render
   // ════════════════════════════════════════════════════════════════════════════
@@ -173,13 +199,11 @@ export default function AdminPage() {
           {[
             { key: 'list', label: `All Products (${products.length})` },
             { key: 'add',  label: '+ Add Product' },
-            { key: 'edit', label: '✏️ Edit Product', disabled: !editId },
-          ].map(({ key, label, disabled }) => (
+          ].map(({ key, label }) => (
             <button
               key={key}
-              style={{ ...styles.tab, ...(tab === key ? styles.tabActive : {}), ...(disabled ? styles.tabDisabled : {}) }}
-              onClick={() => !disabled && setTab(key)}
-              disabled={disabled}
+              style={{ ...styles.tab, ...(tab === key ? styles.tabActive : {}) }}
+              onClick={() => setTab(key)}
             >
               {label}
             </button>
@@ -198,8 +222,30 @@ export default function AdminPage() {
             {error   && <p style={{ ...styles.msg, color: '#e53e3e' }}>⚠️ {error}</p>}
 
             {!loading && !error && (
-              <div style={styles.tableWrapper}>
-                <table style={styles.table}>
+              <>
+                {/* Search & Filter Bar */}
+                <div style={styles.filterBar}>
+                  <input
+                    type="text"
+                    placeholder="Search by name..."
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    style={styles.searchInput}
+                  />
+                  <select
+                    value={activeCategory}
+                    onChange={(e) => setActiveCategory(e.target.value)}
+                    style={styles.categorySelect}
+                  >
+                    <option value="all">All Categories</option>
+                    {CATEGORIES.map(c => (
+                      <option key={c} value={c}>{c.charAt(0).toUpperCase() + c.slice(1)}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div style={styles.tableWrapper}>
+                  <table style={styles.table}>
                   <thead>
                     <tr style={styles.thead}>
                       <th style={styles.th}>ID</th>
@@ -213,7 +259,7 @@ export default function AdminPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {products.map((p, i) => (
+                    {filteredProducts.map((p, i) => (
                       <tr key={p.id} style={{ backgroundColor: i % 2 === 0 ? '#fff' : '#f9f9f9' }}>
                         <td style={styles.td}>{p.id}</td>
                         <td style={{ ...styles.td, fontWeight: '600', maxWidth: '200px' }}>{p.name}</td>
@@ -237,7 +283,11 @@ export default function AdminPage() {
                         </td>
 
                         <td style={{ ...styles.td, textAlign: 'center' }}>
-                          {p.on_sale ? '✅' : '—'}
+                          {p.on_sale ? (
+                            <span style={{ color: '#e53e3e', fontWeight: 'bold' }}>
+                              {p.original_price ? `${Math.round((1 - p.price / p.original_price) * 100)}% OFF` : '✅'}
+                            </span>
+                          ) : '—'}
                         </td>
                         <td style={{ ...styles.td, textAlign: 'center' }}>
                           {p.featured ? '⭐' : '—'}
@@ -253,6 +303,7 @@ export default function AdminPage() {
                   </tbody>
                 </table>
               </div>
+              </>
             )}
           </div>
         )}
@@ -320,22 +371,50 @@ export default function AdminPage() {
                 <textarea style={{ ...styles.input, height: '80px', resize: 'vertical' }} name="description" value={form.description} onChange={handleField} placeholder="Short product description…" />
               </div>
 
-              {/* Checkboxes */}
+              {/* Checkboxes & Discount */}
               <div style={styles.checkRow}>
                 <label style={styles.checkLabel}>
                   <input type="checkbox" name="on_sale" checked={form.on_sale} onChange={handleField} style={{ marginRight: '6px' }} />
                   On Sale
                 </label>
+                
+                {form.on_sale && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <label style={styles.label}>Discount %:</label>
+                    <input 
+                      style={{ ...styles.input, width: '80px', padding: '6px 10px' }} 
+                      name="discount_percent" 
+                      type="number" 
+                      min="1" 
+                      max="99" 
+                      value={form.discount_percent} 
+                      onChange={handleField} 
+                      placeholder="20" 
+                    />
+                  </div>
+                )}
+
                 <label style={styles.checkLabel}>
-                  <input type="checkbox" name="featured" checked={form.featured} onChange={handleField} style={{ marginRight: '6px' }} />
+                  <input type="checkbox" name="featured" checked={form.featured} onChange={handleField} style={{ marginRight: '6px', marginLeft: '12px' }} />
                   Featured
                 </label>
               </div>
 
               {/* Submit */}
-              <button type="submit" style={styles.submitBtn} disabled={saving}>
-                {saving ? 'Saving…' : tab === 'add' ? 'Add Product' : 'Save Changes'}
-              </button>
+              <div style={{ display: 'flex', gap: '12px' }}>
+                <button type="submit" style={styles.submitBtn} disabled={saving}>
+                  {saving ? 'Saving…' : tab === 'add' ? 'Add Product' : 'Save Changes'}
+                </button>
+                {tab === 'edit' && (
+                  <button 
+                    type="button" 
+                    onClick={() => setTab('list')} 
+                    style={{ ...styles.submitBtn, backgroundColor: '#94a3b8' }}
+                  >
+                    Cancel
+                  </button>
+                )}
+              </div>
 
             </form>
           </div>
@@ -592,5 +671,27 @@ const styles = {
     fontSize: '14px',
     fontWeight: '500',
     marginBottom: '4px',
+  },
+  filterBar: {
+    display: 'flex',
+    gap: '12px',
+    marginBottom: '16px',
+    alignItems: 'center',
+  },
+  searchInput: {
+    padding: '8px 12px',
+    borderRadius: '6px',
+    border: '1px solid #cbd5e1',
+    fontSize: '14px',
+    outline: 'none',
+    width: '300px',
+  },
+  categorySelect: {
+    padding: '8px 12px',
+    borderRadius: '6px',
+    border: '1px solid #cbd5e1',
+    fontSize: '14px',
+    outline: 'none',
+    backgroundColor: '#fff',
   },
 };
