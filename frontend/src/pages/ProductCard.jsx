@@ -2,20 +2,20 @@ import React, { useState } from "react";
 import { Link } from "react-router-dom";
 import { useCart } from "../context/CartContext.jsx";
 
-export default function ProductCard({ id, name, price, image, category, stock, onSale, original_price }) {
+export default function ProductCard({ id, name, price, image, category, stock, on_sale, original_price }) {
   const { addToCart } = useCart();
   const [flash, setFlash] = useState(false);
 
   const handleAddToCart = (e) => {
     e.preventDefault(); // prevent Link navigation
     if (stock === 0) return;
-    addToCart({ id, name, price, image, category, stock, onSale });
+    addToCart({ id, name, price, image, category, stock, on_sale });
     setFlash(true);
     setTimeout(() => setFlash(false), 1500);
   };
 
   // Calculate discount % if this product has an original (higher) price
-  const discountPct = onSale && original_price && original_price > price
+  const discountPct = on_sale && original_price && original_price > price
     ? Math.round((original_price - price) / original_price * 100)
     : null;
 
@@ -37,11 +37,11 @@ export default function ProductCard({ id, name, price, image, category, stock, o
     <Link to={`/products/${id}`} style={{ textDecoration: 'none', color: 'inherit' }}>
     <div style={styles.card}>
       {/* Sale badge — shows percentage off when original_price is available */}
-      {onSale && (
+      {on_sale ? (
         <span style={styles.saleBadge}>
           {discountPct ? `${discountPct}% OFF` : "Sale!"}
         </span>
-      )}
+      ) : null}
 
       {/* Product image */}
       <img src={image} alt={name} style={styles.image} />
@@ -56,9 +56,9 @@ export default function ProductCard({ id, name, price, image, category, stock, o
         {/* Price — shows original crossed out when on sale */}
         <div style={styles.priceRow}>
           <span style={styles.price}>${price.toFixed(2)}</span>
-          {onSale && original_price && (
+          {on_sale && original_price ? (
             <span style={styles.originalPrice}>${original_price.toFixed(2)}</span>
-          )}
+          ) : null}
         </div>
 
         {/* Stock status */}

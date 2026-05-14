@@ -22,7 +22,7 @@
 
 import { useState, useEffect } from 'react';
 
-const API_URL = `${import.meta.env.VITE_API_URL}/api/products`;
+const BASE_API_URL = `${import.meta.env.VITE_API_URL}/api/products`;
 
 // ─── Module-level cache ───────────────────────────────────────────────────────
 //
@@ -54,18 +54,18 @@ const API_URL = `${import.meta.env.VITE_API_URL}/api/products`;
 //       data too (usually desirable, but be aware of it)
 //
 // ─────────────────────────────────────────────────────────────────────────────
-let cache = null;
+let cache = {};
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function useProducts() {
+export function useProducts(searchQuery = '') {
 
   // ── Initial state ──────────────────────────────────────────────────────────
   // If the cache is already populated (e.g. this component unmounted and
   // remounted), we pre-fill state with cached values so there is zero delay.
-  const [products,    setProducts]    = useState(cache ? cache.products    : []);
-  const [isLoading,   setIsLoading]   = useState(cache === null); // false when cache hit
+  const [products,    setProducts]    = useState(cache[searchQuery] ? cache[searchQuery].products    : []);
+  const [isLoading,   setIsLoading]   = useState(!cache[searchQuery]); // false when cache hit
   const [error,       setError]       = useState(null);
-  const [lastUpdated, setLastUpdated] = useState(cache ? cache.lastUpdated : null);
+  const [lastUpdated, setLastUpdated] = useState(cache[searchQuery] ? cache[searchQuery].lastUpdated : null);
 
   // ── Internal fetch helper ──────────────────────────────────────────────────
   //
@@ -78,9 +78,10 @@ export function useProducts() {
     // The module-level `cache` is not null, and the caller did not set force,
     // so we simply sync React state with what we already have in memory and
     // return without making any network request.
-    if (cache && !force) {
-      setProducts(cache.products);
-      setLastUpdated(cache.lastUpdated);
+    const cachedData = cache[searchQuery];
+    if (cachedData && !force) {
+      setProducts(cachedData.products);
+      setLastUpdated(cachedData.lastUpdated);
       setIsLoading(false);
       return; // ← exits here; no fetch() call made
     }
@@ -90,7 +91,11 @@ export function useProducts() {
     setIsLoading(true);
     setError(null);
 
-    fetch(API_URL)
+    const url = searchQuery 
+      ? `${BASE_API_URL}?q=${encodeURIComponent(searchQuery)}`
+      : BASE_API_URL;
+
+    fetch(url)
       .then((res) => {
         // Treat non-2xx HTTP responses (e.g. 500) as errors
         if (!res.ok) throw new Error(`Server error: ${res.status}`);
@@ -104,7 +109,7 @@ export function useProducts() {
         // other component — will now receive this data without a network round
         // trip. The cache stays valid until refresh() is called or the tab
         // is reloaded.
-        cache = { products: data, lastUpdated: now };
+        cache[searchQuery] = { products: data, lastUpdated: now };
 
         // Sync React component state
         setProducts(data);
@@ -127,7 +132,7 @@ export function useProducts() {
   // If the cache is empty, it starts a network request (cache miss).
   useEffect(() => {
     fetchProducts(false);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [searchQuery]); // Re-fetch whenever searchQuery changes
 
   // ── refresh() ─────────────────────────────────────────────────────────────
   // Called by the UI "Refresh products" button.
@@ -137,8 +142,8 @@ export function useProducts() {
   //   Step 2 – Call fetchProducts(true) to bypass the now-null cache check
   //            and immediately start a network request.
   const refresh = () => {
-    cache = null;         // ← invalidate; forces next mount to fetch too
-    fetchProducts(true);  // ← always goes to the network
+    cache[searchQuery] = null; // ← invalidate for this query; forces next mount to fetch too
+    fetchProducts(true);       // ← always goes to the network
   };
 
   return { products, isLoading, error, lastUpdated, refresh };

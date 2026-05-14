@@ -7,7 +7,7 @@ import { Navigate } from 'react-router-dom';
 //
 // Usage in App.jsx:
 //   <Route path="/admin" element={
-//     <ProtectedRoute requiredRole="admin">
+//     <ProtectedRoute requiredRoles={["admin"]}>
 //       <AdminPage />
 //     </ProtectedRoute>
 //   } />
@@ -15,12 +15,12 @@ import { Navigate } from 'react-router-dom';
 // What it does:
 //   1. Reads the "token" and "role" saved in localStorage after Google login
 //   2. If no token exists  → redirect to /login (user is not signed in)
-//   3. If the role doesn't match requiredRole → redirect to /login (wrong role)
+//   3. If the role isn't in requiredRoles → redirect to /login (wrong role)
 //   4. Otherwise → render the child component normally
 //
 // =============================================================================
 
-export default function ProtectedRoute({ children, requiredRole }) {
+export default function ProtectedRoute({ children, requiredRoles }) {
   const token = localStorage.getItem('token');
   const role  = localStorage.getItem('role');
 
@@ -30,7 +30,7 @@ export default function ProtectedRoute({ children, requiredRole }) {
   }
 
   // Token exists but role doesn't match what this route requires
-  if (requiredRole && role !== requiredRole) {
+  if (requiredRoles && !requiredRoles.includes(role)) {
     return <Navigate to="/login" replace />;
   }
 

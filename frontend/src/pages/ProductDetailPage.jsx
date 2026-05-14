@@ -95,8 +95,13 @@ export default function ProductDetailPage() {
 
   // Destructure fields from the API response.
   // The API returns on_sale (snake_case) — map it to onSale for JSX readability.
-  const { name, price, image, category, stock, description, on_sale } = product;
+  const { name, price, image, category, stock, description, on_sale, original_price } = product;
   const onSale = Boolean(on_sale);
+
+  // Calculate discount %
+  const discountPct = onSale && original_price && original_price > price
+    ? Math.round((original_price - price) / original_price * 100)
+    : null;
 
   let stockLabel, stockColor;
   if (stock === 0) { stockLabel = 'Out of Stock'; stockColor = '#e53e3e'; }
@@ -132,7 +137,11 @@ export default function ProductDetailPage() {
 
         {/* Left: Image */}
         <div style={styles.imageWrapper}>
-          {onSale && <span style={styles.saleBadge}>Sale!</span>}
+          {onSale && (
+            <span style={styles.saleBadge}>
+              {discountPct ? `${discountPct}% OFF` : "Sale!"}
+            </span>
+          )}
           <img src={image} alt={name} style={styles.image} />
         </div>
 
@@ -146,7 +155,14 @@ export default function ProductDetailPage() {
           <h1 style={styles.name}>{name}</h1>
 
           {/* Price */}
-          <p style={styles.price}>${price.toFixed(2)}</p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', margin: '0 0 16px 0' }}>
+            <p style={{ ...styles.price, margin: 0 }}>${price.toFixed(2)}</p>
+            {onSale && original_price && (
+              <p style={{ margin: 0, textDecoration: 'line-through', color: '#94a3b8', fontSize: '18px' }}>
+                ${original_price.toFixed(2)}
+              </p>
+            )}
+          </div>
 
           {/* Stock */}
           <p style={{ ...styles.stock, color: stockColor }}>

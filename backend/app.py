@@ -23,12 +23,14 @@
 # =============================================================================
 
 import os
+import csv
+import io
 from dotenv import load_dotenv
 
 load_dotenv()
 
 import sqlite3
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, Response
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager, create_access_token, decode_token
 from jwt.exceptions import ExpiredSignatureError, DecodeError
@@ -78,12 +80,12 @@ def get_connection():
 # -----------------------------------------------------------------------------
 import functools
 
-def require_role(required_role):
+def require_roles(required_roles):
     """Decorator factory that protects a route with JWT + role check.
 
     Usage:
         @app.route("/api/some-admin-route", methods=["PUT"])
-        @require_role("admin")
+        @require_roles(["admin", "cashier"])
         def my_view():
             ...
 
@@ -91,7 +93,7 @@ def require_role(required_role):
       1. Reads the Authorization header — expects "Bearer <jwt-token>"
       2. Decodes the JWT using the app's secret key
       3. Reads the "role" claim embedded in the token
-      4. If the role matches required_role → calls the original view function
+      4. If the role is in required_roles → calls the original view function
       5. If the token is missing           → 401 Unauthorized
       6. If the token is invalid/expired   → 401 Unauthorized
       7. If the role does not match        → 403 Forbidden
@@ -116,8 +118,8 @@ def require_role(required_role):
 
             # ── Step 3: check the role claim ─────────────────────────────────
             user_role = decoded.get("role") or decoded.get("additional_claims", {}).get("role")
-            if user_role != required_role:
-                return jsonify({"error": f"Forbidden: requires role '{required_role}'"}), 403
+            if user_role not in required_roles:
+                return jsonify({"error": f"Forbidden: requires one of {required_roles}"}), 403
 
             # ── Step 4: all good — call the real view function ───────────────
             return fn(*args, **kwargs)
@@ -156,9 +158,14 @@ def get_products():
       const products = await res.json()   // → array of product objects
     """
     con = get_connection()
+    q = request.args.get("q", "").strip()
 
-    # fetchall() returns all matching rows
-    rows = con.execute("SELECT * FROM products").fetchall()
+    if q:
+        search_pattern = f"%{q}%"
+        query = "SELECT * FROM products WHERE name LIKE ? OR description LIKE ?"
+        rows = con.execute(query, (search_pattern, search_pattern)).fetchall()
+    else:
+        rows = con.execute("SELECT * FROM products").fetchall()
 
     con.close()  # always close the connection when finished
 
@@ -228,18 +235,19 @@ def create_product():
     con = get_connection()
     cur = con.execute(
         """
-        INSERT INTO products (name, price, image, category, stock, description, featured, on_sale)
-        VALUES (:name, :price, :image, :category, :stock, :description, :featured, :on_sale)
+        INSERT INTO products (name, price, image, category, stock, description, featured, on_sale, original_price)
+        VALUES (:name, :price, :image, :category, :stock, :description, :featured, :on_sale, :original_price)
         """,
         {
-            "name":        data.get("name"),
-            "price":       float(data.get("price", 0)),
-            "image":       data.get("image", ""),
-            "category":    data.get("category", ""),
-            "stock":       int(data.get("stock", 0)),
-            "description": data.get("description", ""),
-            "featured":    int(bool(data.get("featured", 0))),
-            "on_sale":     int(bool(data.get("on_sale", 0))),
+            "name":           data.get("name"),
+            "price":          float(data.get("price", 0)),
+            "image":          data.get("image", ""),
+            "category":       data.get("category", ""),
+            "stock":          int(data.get("stock", 0)),
+            "description":    data.get("description", ""),
+            "featured":       int(bool(data.get("featured", 0))),
+            "on_sale":        int(bool(data.get("on_sale", 0))),
+            "original_price": data.get("original_price"),
         },
     )
     con.commit()
@@ -273,19 +281,20 @@ def update_product(product_id):
         UPDATE products
         SET name=:name, price=:price, image=:image, category=:category,
             stock=:stock, description=:description,
-            featured=:featured, on_sale=:on_sale
+            featured=:featured, on_sale=:on_sale, original_price=:original_price
         WHERE id=:id
         """,
         {
-            "name":        data.get("name"),
-            "price":       float(data.get("price", 0)),
-            "image":       data.get("image", ""),
-            "category":    data.get("category", ""),
-            "stock":       int(data.get("stock", 0)),
-            "description": data.get("description", ""),
-            "featured":    int(bool(data.get("featured", 0))),
-            "on_sale":     int(bool(data.get("on_sale", 0))),
-            "id":          product_id,
+            "name":           data.get("name"),
+            "price":          float(data.get("price", 0)),
+            "image":          data.get("image", ""),
+            "category":       data.get("category", ""),
+            "stock":          int(data.get("stock", 0)),
+            "description":    data.get("description", ""),
+            "featured":       int(bool(data.get("featured", 0))),
+            "on_sale":        int(bool(data.get("on_sale", 0))),
+            "original_price": data.get("original_price"),
+            "id":             product_id,
         },
     )
     con.commit()
@@ -328,7 +337,7 @@ def update_stock(product_id):
 # Route 7 — Restock a product (Admin)  PUT /api/products/<id>/stock
 # -----------------------------------------------------------------------------
 @app.route("/api/products/<int:product_id>/stock", methods=["PUT"])
-@require_role("admin")   # ← JWT required; role must be "admin"
+@require_roles(["admin"])   # ← JWT required; role must be "admin"
 def restock_product(product_id):
     """Update the stock field and return the full updated product row.
 
@@ -506,6 +515,314 @@ def google_login():
 
     return jsonify({"token": token}), 200
 
+
+# -----------------------------------------------------------------------------
+# Route 9 — POS Checkout (Admin / Cashier)
+# -----------------------------------------------------------------------------
+@app.route("/api/pos/checkout", methods=["POST"])
+@require_roles(["admin", "cashier"])
+def pos_checkout():
+    """Process a POS sale.
+
+    Expects: { "items": [ {"id": 1, "quantity": 2}, ... ] }
+    Deducts stock and creates an order record.
+    """
+    data = request.get_json()
+    if not data or "items" not in data or not isinstance(data["items"], list):
+        return jsonify({"error": "Invalid payload. Expected { 'items': [...] }"}), 400
+
+    items = data["items"]
+    if not items:
+        return jsonify({"error": "Cart is empty"}), 400
+
+    con = get_connection()
+    try:
+        con.execute("BEGIN TRANSACTION")
+        
+        total_price = 0.0
+        processed_items = []
+
+        for item in items:
+            product_id = item.get("id")
+            quantity = item.get("quantity")
+            
+            if not isinstance(product_id, int) or not isinstance(quantity, int) or quantity <= 0:
+                raise ValueError("Invalid item format")
+
+            row = con.execute("SELECT name, price, stock FROM products WHERE id = ?", (product_id,)).fetchone()
+            if not row:
+                raise ValueError(f"Product ID {product_id} not found")
+            
+            stock = row["stock"]
+            price = row["price"]
+            name = row["name"]
+            
+            if stock < quantity:
+                raise ValueError(f"Not enough stock for {name}. Available: {stock}, Requested: {quantity}")
+
+            con.execute("UPDATE products SET stock = stock - ? WHERE id = ?", (quantity, product_id))
+            
+            total_price += price * quantity
+            processed_items.append({
+                "product_id": product_id,
+                "quantity": quantity,
+                "price": price
+            })
+
+        # Apply discount if provided
+        discount_percent = data.get("discount_percent", 0)
+        try:
+            discount_percent = float(discount_percent)
+            if not (0 <= discount_percent <= 100):
+                raise ValueError
+        except ValueError:
+            raise ValueError("discount_percent must be a number between 0 and 100")
+            
+        if discount_percent > 0:
+            total_price = total_price * (1 - discount_percent / 100.0)
+
+        cur = con.cursor()
+        cur.execute("INSERT INTO orders (total) VALUES (?)", (total_price,))
+        order_id = cur.lastrowid
+
+        for p_item in processed_items:
+            cur.execute(
+                "INSERT INTO order_items (order_id, product_id, quantity, price_at_purchase) VALUES (?, ?, ?, ?)",
+                (order_id, p_item["product_id"], p_item["quantity"], p_item["price"])
+            )
+
+        con.commit()
+        return jsonify({"message": "Sale completed successfully", "order_id": order_id}), 200
+
+    except ValueError as e:
+        con.rollback()
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        con.rollback()
+        return jsonify({"error": "Internal server error"}), 500
+    finally:
+        con.close()
+
+
+# -----------------------------------------------------------------------------
+# Route 10 — Online Checkout (Public / Customer)
+# -----------------------------------------------------------------------------
+@app.route("/api/checkout", methods=["POST"])
+def online_checkout():
+    """Process an online store checkout.
+
+    Expects: { "items": [ {"id": 1, "quantity": 2}, ... ] }
+    If Authorization header is provided, links the order to the user.
+    """
+    data = request.get_json()
+    if not data or "items" not in data or not isinstance(data["items"], list):
+        return jsonify({"error": "Invalid payload. Expected { 'items': [...] }"}), 400
+
+    items = data["items"]
+    phone = data.get("phone")
+    if not items:
+        return jsonify({"error": "Cart is empty"}), 400
+
+    # Check for optional auth token to link user
+    user_id = None
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header.split(" ", 1)[1]
+        try:
+            decoded = decode_token(token)
+            user_id = decoded.get("sub")
+        except Exception:
+            pass # Ignore invalid token for guest checkout
+
+    con = get_connection()
+    try:
+        con.execute("BEGIN TRANSACTION")
+        
+        total_price = 0.0
+        processed_items = []
+
+        for item in items:
+            product_id = item.get("id")
+            quantity = item.get("quantity")
+            
+            if not isinstance(product_id, int) or not isinstance(quantity, int) or quantity <= 0:
+                raise ValueError("Invalid item format")
+
+            row = con.execute("SELECT name, price, stock FROM products WHERE id = ?", (product_id,)).fetchone()
+            if not row:
+                raise ValueError(f"Product ID {product_id} not found")
+            
+            stock = row["stock"]
+            price = row["price"]
+            name = row["name"]
+            
+            if stock < quantity:
+                raise ValueError(f"Not enough stock for {name}. Available: {stock}, Requested: {quantity}")
+
+            con.execute("UPDATE products SET stock = stock - ? WHERE id = ?", (quantity, product_id))
+            
+            total_price += price * quantity
+            processed_items.append({
+                "product_id": product_id,
+                "quantity": quantity,
+                "price": price
+            })
+
+        cur = con.cursor()
+        if user_id:
+            cur.execute("INSERT INTO orders (user_id, total, phone) VALUES (?, ?, ?)", (user_id, total_price, phone))
+        else:
+            cur.execute("INSERT INTO orders (total, phone) VALUES (?, ?)", (total_price, phone))
+        order_id = cur.lastrowid
+
+        for p_item in processed_items:
+            cur.execute(
+                "INSERT INTO order_items (order_id, product_id, quantity, price_at_purchase) VALUES (?, ?, ?, ?)",
+                (order_id, p_item["product_id"], p_item["quantity"], p_item["price"])
+            )
+
+        con.commit()
+        return jsonify({"message": "Order placed successfully", "order_id": order_id}), 200
+
+    except ValueError as e:
+        con.rollback()
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        con.rollback()
+        return jsonify({"error": "Internal server error"}), 500
+    finally:
+        con.close()
+
+# -----------------------------------------------------------------------------
+# Route 11 — Order History (Customer / Admin)
+# -----------------------------------------------------------------------------
+@app.route("/api/orders", methods=["GET"])
+def get_orders():
+    """Fetch order history.
+    Admins see all orders. Customers see their own.
+    Guests see orders matching guest_ids (only where user_id IS NULL).
+    """
+    auth_header = request.headers.get("Authorization", "")
+    user_role = None
+    user_id = None
+    
+    if auth_header.startswith("Bearer "):
+        try:
+            token = auth_header.split(" ", 1)[1]
+            decoded = decode_token(token)
+            user_id = decoded.get("sub")
+            user_role = decoded.get("role") or decoded.get("additional_claims", {}).get("role")
+        except Exception:
+            pass # Treat as guest if token is invalid
+
+    con = get_connection()
+    if user_role == "admin":
+        orders = con.execute("SELECT * FROM orders ORDER BY created_at DESC").fetchall()
+    elif user_role in ["customer", "cashier"] and user_id:
+        orders = con.execute("SELECT * FROM orders WHERE user_id = ? ORDER BY created_at DESC", (user_id,)).fetchall()
+    else:
+        # Guest mode
+        guest_ids_param = request.args.get("guest_ids")
+        if not guest_ids_param:
+            con.close()
+            return jsonify([]), 200
+            
+        # Parse guest_ids (e.g., "1,2,3")
+        try:
+            guest_ids = [int(gid) for gid in guest_ids_param.split(",") if gid.strip()]
+        except ValueError:
+            con.close()
+            return jsonify({"error": "Invalid guest_ids parameter"}), 400
+            
+        if not guest_ids:
+            con.close()
+            return jsonify([]), 200
+
+        # Create placeholders for IN clause
+        placeholders = ",".join("?" * len(guest_ids))
+        query = f"SELECT * FROM orders WHERE id IN ({placeholders}) AND user_id IS NULL ORDER BY created_at DESC"
+        orders = con.execute(query, guest_ids).fetchall()
+
+    order_list = []
+    for o in orders:
+        o_dict = dict(o)
+        items = con.execute("""
+            SELECT oi.*, p.name 
+            FROM order_items oi 
+            LEFT JOIN products p ON oi.product_id = p.id
+            WHERE oi.order_id = ?
+        """, (o["id"],)).fetchall()
+        o_dict["items"] = [dict(i) for i in items]
+        order_list.append(o_dict)
+        
+    con.close()
+    return jsonify(order_list), 200
+
+# -----------------------------------------------------------------------------
+# Route 12 — Export Orders to CSV (Admin Only)
+# -----------------------------------------------------------------------------
+@app.route("/api/orders/export", methods=["GET"])
+@require_roles(["admin"])
+def export_orders_csv():
+    """Export all orders and their line items as a downloadable CSV file.
+    Only accessible to admins. Teaches io.StringIO, csv.writer, and Flask Response streaming.
+    """
+    con = get_connection()
+    # Fetch all orders joined with order_items and products
+    query = """
+        SELECT 
+            o.id as order_id, 
+            o.created_at, 
+            o.user_id, 
+            o.phone, 
+            o.status, 
+            o.total as order_total,
+            oi.quantity, 
+            oi.price_at_purchase as item_price,
+            p.name as product_name
+        FROM orders o
+        LEFT JOIN order_items oi ON o.id = oi.order_id
+        LEFT JOIN products p ON oi.product_id = p.id
+        ORDER BY o.created_at DESC
+    """
+    rows = con.execute(query).fetchall()
+    con.close()
+
+    # Create an in-memory string buffer
+    si = io.StringIO()
+    cw = csv.writer(si)
+    
+    # Write the CSV header
+    cw.writerow([
+        "Order ID", "Date", "User ID", "Phone", "Status", "Order Total", 
+        "Product Name", "Quantity", "Item Price", "Item Subtotal"
+    ])
+    
+    # Write data rows
+    for r in rows:
+        item_subtotal = (r["quantity"] * r["item_price"]) if r["quantity"] and r["item_price"] else 0
+        cw.writerow([
+            r["order_id"],
+            r["created_at"],
+            r["user_id"] or "Guest",
+            r["phone"] or "N/A",
+            r["status"],
+            f"${r['order_total']:.2f}",
+            r["product_name"] or "Unknown Item",
+            r["quantity"] or 0,
+            f"${r['item_price']:.2f}" if r["item_price"] else "$0.00",
+            f"${item_subtotal:.2f}"
+        ])
+
+    # Get the CSV string and create a response
+    output = si.getvalue()
+    si.close()
+
+    return Response(
+        output,
+        mimetype="text/csv",
+        headers={"Content-Disposition": "attachment; filename=orders_export.csv"}
+    )
 
 if __name__ == "__main__":
     # Check that the database file exists before starting

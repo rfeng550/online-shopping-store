@@ -27,6 +27,18 @@ const pages = [
     description: 'Manage inventory: add, edit, update stock, and delete products.',
     color: '#2d8a4e',
   },
+  {
+    path: '/pos',
+    title: '🧾 POS',
+    description: 'Point of Sale system for cashiers to process in-store transactions.',
+    color: '#e53e3e',
+  },
+  {
+    path: '/orders',
+    title: '📦 Order History',
+    description: 'View your past orders, items purchased, and total amounts.',
+    color: '#dd6b20',
+  },
 ];
 // ─────────────────────────────────────────────────────────────────────────────
 

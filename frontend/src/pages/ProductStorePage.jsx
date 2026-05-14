@@ -9,20 +9,16 @@ export default function ProductStorePage() {
   const [activeCategory, setActiveCategory] = useState('all');
   const { cartCount } = useCart();
 
-  // --- useProducts hook (cached, no redundant re-fetches on navigation) ---
-  const { products, isLoading, error, lastUpdated, refresh } = useProducts();
+  // --- useProducts hook (now passes search query to backend) ---
+  const { products, isLoading, error, lastUpdated, refresh } = useProducts(query);
 
   // Derive unique categories from the fetched data
   const categories = ['all', ...new Set(products.map((p) => p.category))];
 
+  // Frontend filter now only handles category matching.
+  // Search query is handled by the backend!
   const filteredProducts = products.filter((p) => {
-    const q = query.toLowerCase();
-    const matchesSearch =
-      p.name.toLowerCase().includes(q) ||
-      p.category.toLowerCase().includes(q) ||
-      (p.description || '').toLowerCase().includes(q);
-    const matchesCategory = activeCategory === 'all' || p.category === activeCategory;
-    return matchesSearch && matchesCategory;
+    return activeCategory === 'all' || p.category === activeCategory;
   });
 
   const scrollToProducts = () => {

@@ -24,6 +24,8 @@ export default function CheckoutPage() {
   const tax = cartTotal * 0.08;
   const total = cartTotal + shippingFee + tax;
 
+  const [checkoutError, setCheckoutError] = useState('');
+
   const validate = () => {
     const e = {};
     if (!form.fullName.trim()) e.fullName = 'Required';
@@ -41,11 +43,43 @@ export default function CheckoutPage() {
     setErrors((prev) => ({ ...prev, [field]: undefined }));
   };
 
-  const handlePlaceOrder = () => {
+  const handlePlaceOrder = async () => {
+    setCheckoutError('');
     const e = validate();
     if (Object.keys(e).length > 0) { setErrors(e); return; }
-    clearCart();
-    setPlaced(true);
+
+    const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001';
+    const items = cart.map(item => ({ id: item.id, quantity: item.quantity }));
+    const token = localStorage.getItem('token');
+    
+    const headers = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
+    try {
+      const res = await fetch(`${API_URL}/api/checkout`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ items, phone: form.phone })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        setCheckoutError(data.error || 'Failed to place order');
+        return;
+      }
+      
+      // If checked out as guest, save order ID to local storage
+      if (!token && data.order_id) {
+        const storedOrders = JSON.parse(localStorage.getItem('guestOrders') || '[]');
+        storedOrders.push(data.order_id);
+        localStorage.setItem('guestOrders', JSON.stringify(storedOrders));
+      }
+
+      clearCart();
+      setPlaced(true);
+    } catch (err) {
+      setCheckoutError('Network error during checkout');
+    }
   };
 
   if (cart.length === 0 && !placed) {
@@ -218,6 +252,12 @@ export default function CheckoutPage() {
               <span>Total</span>
               <span>${total.toFixed(2)}</span>
             </div>
+
+            {checkoutError && (
+              <div style={{ color: '#e53e3e', fontSize: '14px', marginTop: '12px', textAlign: 'center', fontWeight: 'bold' }}>
+                {checkoutError}
+              </div>
+            )}
 
             <button style={styles.placeBtn} onClick={handlePlaceOrder}>
               Place Order →

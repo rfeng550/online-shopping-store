@@ -59,10 +59,36 @@ def init_db():
         VALUES ('rfeng550@gmail.com', 'Admin', 'admin')
     """)
 
+    # Create orders table to record transactions (POS or online)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            total REAL NOT NULL,
+            phone TEXT,
+            status TEXT NOT NULL DEFAULT 'completed',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+    """)
+
+    # Create order_items table to record products within an order
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS order_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER NOT NULL,
+            product_id INTEGER NOT NULL,
+            quantity INTEGER NOT NULL,
+            price_at_purchase REAL NOT NULL,
+            FOREIGN KEY(order_id) REFERENCES orders(id),
+            FOREIGN KEY(product_id) REFERENCES products(id)
+        )
+    """)
+
     con.commit()
     con.close()
     print(f"✅  Schema ready: {DB_PATH}")
-    print("    Tables: products, users")
+    print("    Tables: products, users, orders, order_items")
     print("    Default admin: rfeng550@gmail.com")
     print("    Run 'python seed_products.py' to populate the products table.")
 
