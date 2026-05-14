@@ -42,7 +42,10 @@ app = Flask(__name__)
 
 # CORS lets your React app (running at localhost:5173) call this API.
 # Without this, the browser would block the request with a CORS error.
-CORS(app, origins=["http://localhost:5173"])
+CORS(app, origins=[
+    "http://localhost:5173",
+    "https://online-shopping-store-pi.vercel.app"
+])
 
 # JWT configuration — secret key is loaded from .env
 app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY", "fallback-secret-change-me")
