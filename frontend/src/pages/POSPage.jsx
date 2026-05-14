@@ -5,6 +5,7 @@ export default function POSPage() {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [posCart, setPosCart] = useState([]);
+  const [discountPercent, setDiscountPercent] = useState('');
   const [checkoutError, setCheckoutError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
 
@@ -30,9 +31,9 @@ export default function POSPage() {
   }, []);
 
   // Filter products by search
-  const filteredProducts = products.filter((p) =>
-    p.name.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const filteredProducts = Array.isArray(products) 
+    ? products.filter((p) => (p.name || '').toLowerCase().includes((searchTerm || '').toLowerCase()))
+    : [];
 
   // Cart operations
   const addToCart = (product) => {
@@ -69,8 +70,10 @@ export default function POSPage() {
   const clearCart = () => setPosCart([]);
 
   const subtotal = posCart.reduce((acc, item) => acc + item.price * item.quantity, 0);
-  const tax = subtotal * 0.08;
-  const total = subtotal + tax;
+  const discountAmount = (subtotal * (Number(discountPercent) || 0)) / 100;
+  const taxableAmount = subtotal - discountAmount;
+  const tax = taxableAmount * 0.08;
+  const total = taxableAmount + tax;
 
   const handleCheckout = async () => {
     setCheckoutError('');
@@ -90,7 +93,10 @@ export default function POSPage() {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify({ items })
+        body: JSON.stringify({ 
+          items,
+          discount_percent: Number(discountPercent) || 0 
+        })
       });
 
       const data = await res.json();
@@ -201,6 +207,23 @@ export default function POSPage() {
                 <span>${subtotal.toFixed(2)}</span>
               </div>
               <div style={styles.totalRow}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  Discount (%)
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    placeholder="0"
+                    value={discountPercent}
+                    onChange={(e) => setDiscountPercent(e.target.value)}
+                    style={styles.discountInput}
+                  />
+                </span>
+                <span style={{ color: '#ef4444' }}>
+                  −${discountAmount.toFixed(2)}
+                </span>
+              </div>
+              <div style={styles.totalRow}>
                 <span>Tax (8%)</span>
                 <span>${tax.toFixed(2)}</span>
               </div>
@@ -298,6 +321,7 @@ const styles = {
     overflowY: 'auto',
     display: 'grid',
     gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
+    gridAutoRows: 'min-content',
     gap: '16px',
     alignContent: 'start',
   },
@@ -309,9 +333,13 @@ const styles = {
     cursor: 'pointer',
     border: '1px solid #e2e8f0',
     transition: 'transform 0.1s, box-shadow 0.1s',
+    display: 'flex',
+    flexDirection: 'column',
+    minHeight: '210px',
   },
   cardImgWrapper: {
-    height: '140px',
+    height: '130px',
+    flexShrink: 0,
     position: 'relative',
     backgroundColor: '#f8fafc',
   },
@@ -466,8 +494,17 @@ const styles = {
   totalRow: {
     display: 'flex',
     justifyContent: 'space-between',
+    alignItems: 'center',
     fontSize: '15px',
     color: '#475569',
+  },
+  discountInput: {
+    width: '50px',
+    padding: '4px 8px',
+    border: '1px solid #cbd5e1',
+    borderRadius: '4px',
+    fontSize: '14px',
+    textAlign: 'right',
   },
   grandTotal: {
     fontSize: '20px',
