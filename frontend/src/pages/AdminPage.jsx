@@ -7,13 +7,13 @@
 //   2. Add Product  — form to create a new product (POST)
 //   3. Edit Product — form pre-filled for a selected product (PUT)
 //
-// API base: http://localhost:5001
+// API base: import.meta.env.VITE_API_URL
 // =============================================================================
 
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 
-const API = 'http://localhost:5001';
+const API = import.meta.env.VITE_API_URL;
 
 // Helper: read the JWT from localStorage and return it as an Authorization header.
 // All endpoints protected by @require_role() on Flask need this header.
